@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Catastro y Zonificación — Comodoro Rivadavia</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<style>
+  :root{
+    --navy:#152B3C;
+    --navy-2:#1E3E54;
+    --paper:#EEF1F0;
+    --paper-2:#FFFFFF;
+    --rust:#B5583A;
+    --rust-dark:#8C4028;
+    --sage:#7C8B6F;
+    --line:#C7CDC9;
+    --ink:#1B2320;
+    --ink-soft:#5B655F;
+    --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    --serif: Georgia, 'Times New Roman', serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;height:100%;font-family:var(--sans);color:var(--ink);background:var(--paper);}
+
+  header{
+    background: var(--navy);
+    color: #EFE9E1;
+    padding: 14px 20px;
+    display:flex;
+    align-items:baseline;
+    gap:14px;
+    flex-wrap:wrap;
+    border-bottom: 3px solid var(--rust);
+  }
+  header h1{
+    font-family: var(--serif);
+    font-size: 1.35rem;
+    font-weight:700;
+    margin:0;
+    letter-spacing: 0.2px;
+  }
+  header .tag{
+    font-size:0.78rem;
+    color:#B9C2CB;
+    font-family:var(--mono);
+    letter-spacing:0.3px;
+  }
+
+  .layout{
+    display:flex;
+    height: calc(100vh - 60px);
+    min-height: 500px;
+  }
+  #map{ flex:1; height:100%; background:#dfe6e2; }
+
+  .panel{
+    width: 380px;
+    max-width: 42vw;
+    background: var(--paper-2);
+    border-left: 1px solid var(--line);
+    display:flex;
+    flex-direction:column;
+    overflow:hidden;
+  }
+
+  .search-box{
+    padding:16px;
+    border-bottom:1px solid var(--line);
+    background: var(--paper);
+  }
+  .search-box label{
+    display:block;
+    font-size:0.72rem;
+    text-transform:uppercase;
+    letter-spacing:0.08em;
+    color: var(--ink-soft);
+    margin-bottom:6px;
+  }
+  .search-row{ display:flex; gap:8px; }
+  .search-row input{
+    flex:1;
+    font-family:var(--mono);
+    font-size:1.05rem;
+    padding:10px 12px;
+    border:1.5px solid var(--navy-2);
+    border-radius:2px;
+    background:#fff;
+  }
+  .search-row input:focus{ outline:2px solid var(--rust); outline-offset:1px; }
+  .search-row button{
+    background: var(--rust);
+    color:#fff;
+    border:none;
+    padding:0 18px;
+    font-weight:600;
+    font-size:0.95rem;
+    border-radius:2px;
+    cursor:pointer;
+  }
+  .search-row button:hover{ background: var(--rust-dark); }
+  .search-row button:focus-visible{ outline:2px solid var(--navy); outline-offset:2px; }
+  .hint{ font-size:0.75rem; color:var(--ink-soft); margin-top:8px; }
+
+  .results{
+    flex:1;
+    overflow-y:auto;
+    padding:16px;
+  }
+
+  .card{
+    position:relative;
+    border:1px solid var(--line);
+    background:#fff;
+    padding:16px 16px 14px;
+    margin-bottom:14px;
+  }
+  /* survey-plan corner ticks, a nod to the cadastral plan aesthetic */
+  .card::before, .card::after,
+  .card .tick-br, .card .tick-tl{
+    content:"";
+    position:absolute;
+    width:10px; height:10px;
+    border-color: var(--navy-2);
+    border-style:solid;
+  }
+  .card::before{ top:-1px; left:-1px; border-width:2px 0 0 2px; }
+  .card::after{ bottom:-1px; right:-1px; border-width:0 2px 2px 0; }
+
+  .card h2{
+    font-size:0.98rem;
+    margin:0 0 10px;
+    color:var(--navy);
+    font-family:var(--serif);
+  }
+  .badge{
+    display:inline-block;
+    font-size:0.68rem;
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+    font-weight:700;
+    padding:3px 8px;
+    border-radius:2px;
+    color:#fff;
+    margin-bottom:10px;
+  }
+  .badge.fiscal{ background: var(--sage); }
+  .badge.privado{ background: var(--navy-2); }
+
+  dl.data-list{ margin:0; }
+  dl.data-list .row{
+    display:flex;
+    justify-content:space-between;
+    gap:10px;
+    padding:6px 0;
+    border-bottom:1px dashed var(--line);
+    font-size:0.86rem;
+  }
+  dl.data-list .row:last-child{ border-bottom:none; }
+  dl.data-list dt{ color:var(--ink-soft); }
+  dl.data-list dd{ margin:0; text-align:right; font-family:var(--mono); font-size:0.85rem; max-width:60%; }
+
+  .zone-block{
+    margin-top:10px;
+    padding-top:10px;
+    border-top:2px solid var(--navy);
+  }
+  .zone-block .zname{ font-weight:700; color:var(--navy); font-size:0.95rem; }
+  .zone-block .zcode{ font-family:var(--mono); color:var(--rust-dark); font-size:0.8rem; }
+  .zone-block .uso{ font-size:0.83rem; margin:8px 0; line-height:1.4; color:var(--ink); }
+  .indicators{
+    display:grid;
+    grid-template-columns: 1fr 1fr;
+    gap:6px 12px;
+    margin-top:8px;
+  }
+  .indicators .ind{ font-size:0.78rem; }
+  .indicators .ind b{ display:block; font-family:var(--mono); font-size:0.88rem; color:var(--navy-2); }
+  .zone-block a{ color:var(--rust-dark); font-size:0.8rem; }
+
+  .empty, .error, .loading{
+    padding:18px 16px;
+    font-size:0.88rem;
+    color:var(--ink-soft);
+    border:1px dashed var(--line);
+    background:var(--paper);
+  }
+  .error{ border-color: var(--rust); color: var(--rust-dark); background:#FBEDE9; }
+
+  .legend{
+    background:#fff;
+    padding:8px 10px;
+    font-size:0.72rem;
+    line-height:1.5;
+    max-height:220px;
+    overflow-y:auto;
+    box-shadow:0 1px 4px rgba(0,0,0,0.2);
+    border-radius:2px;
+  }
+  .legend div{ display:flex; align-items:center; gap:6px; margin-bottom:2px;}
+  .legend span.sw{ width:11px; height:11px; display:inline-block; border:1px solid rgba(0,0,0,0.35); flex-shrink:0;}
+
+  .disclaimer{
+    padding:10px 16px;
+    font-size:0.72rem;
+    color: var(--ink-soft);
+    background: var(--paper);
+    border-top:1px solid var(--line);
+    line-height:1.4;
+  }
+
+  @media (max-width: 760px){
+    .layout{ flex-direction:column; height:auto; }
+    #map{ height:52vh; }
+    .panel{ width:100%; max-width:100%; border-left:none; border-top:1px solid var(--line); }
+    .results{ max-height:38vh; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Catastro y Zonificación de Comodoro Rivadavia</h1>
+  <span class="tag">proyecto comunitario · no oficial</span>
+</header>
+
+<div class="layout">
+  <div id="map"></div>
+
+  <div class="panel">
+    <div class="search-box">
+      <label for="partida-input">Buscar por número de partida</label>
+      <div class="search-row">
+        <input id="partida-input" type="number" inputmode="numeric" placeholder="Ej: 37679" />
+        <button id="search-btn">Buscar</button>
+      </div>
+      <div class="hint">También podés hacer clic en cualquier parcela o zona del mapa.</div>
+    </div>
+    <div class="results" id="results">
+      <div class="empty">Ingresá un número de partida inmobiliaria para ver su zona urbana, indicadores urbanísticos y datos catastrales.</div>
+    </div>
+    <div class="disclaimer">
+      Datos catastrales relevados en 2022–2023 y zonificación vigente al momento de su carga. Puede haber cambios posteriores no reflejados acá. Este mapa es un proyecto comunitario independiente, no reemplaza la información oficial del Municipio o el Catastro provincial.
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js"></script>
+<script>
+(function(){
+
+  const map = L.map('map', { zoomControl: true }).setView([-45.8641, -67.4966], 12);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  // ---------- color helper: deterministic hash -> HSL, so it adapts if zone codes change ----------
+  function colorForCode(code){
+    code = code || 'SIN_CODIGO';
+    let hash = 0;
+    for (let i=0;i<code.length;i++){ hash = code.charCodeAt(i) + ((hash<<5)-hash); }
+    const hue = Math.abs(hash) % 360;
+    return `hsl(${hue}, 58%, 55%)`;
+  }
+
+  let zonasLayer, barriosLayer, highlightLayer;
+  let zonasData, barriosData;
+  const shardCache = {};
+
+  // ---------- load zonificación ----------
+  fetch('data/zonificacion_final.geojson').then(r=>r.json()).then(data=>{
+    zonasData = data;
+    const legendCodes = new Map();
+    zonasLayer = L.geoJSON(data, {
+      style: f => ({
+        color: '#33413C',
+        weight: 1,
+        fillColor: colorForCode(f.properties.codigo),
+        fillOpacity: 0.35
+      }),
+      onEachFeature: (f, layer) => {
+        const p = f.properties;
+        if (p.codigo) legendCodes.set(p.codigo, p.nombre);
+        layer.on('click', () => renderZoneOnly(p));
+        layer.bindTooltip(`${p.codigo || ''} — ${p.nombre || ''}`, {sticky:true});
+      }
+    }).addTo(map);
+
+    buildLegend(legendCodes);
+  });
+
+  // ---------- load barrios (outline only, toggle) ----------
+  fetch('data/barrios_final.geojson').then(r=>r.json()).then(data=>{
+    barriosData = data;
+    barriosLayer = L.geoJSON(data, {
+      style: { color:'#152B3C', weight:1.4, fill:false, dashArray:'4,3' },
+      onEachFeature: (f, layer) => {
+        layer.bindTooltip(f.properties.barrio || '', {sticky:true});
+      }
+    });
+    L.control.layers(null, { 'Límites de barrios': barriosLayer }, {collapsed:false}).addTo(map);
+  });
+
+  function buildLegend(codes){
+    const div = L.control({position:'bottomleft'});
+    div.onAdd = function(){
+      const el = L.DomUtil.create('div','legend');
+      let html = '<strong style="font-size:0.74rem;">Zonificación</strong><br>';
+      [...codes.entries()].sort().forEach(([code,name])=>{
+        html += `<div><span class="sw" style="background:${colorForCode(code)}"></span> ${code} — ${name||''}</div>`;
+      });
+      el.innerHTML = html;
+      L.DomEvent.disableClickPropagation(el);
+      return el;
+    };
+    div.addTo(map);
+  }
+
+  // ---------- spatial helpers ----------
+  function findZoneForFeature(feature){
+    if (!zonasData) return null;
+    let centroid;
+    try { centroid = turf.centroid(feature); } catch(e){ return null; }
+    for (const zf of zonasData.features){
+      try {
+        if (turf.booleanPointInPolygon(centroid, zf)) return zf.properties;
+      } catch(e){ /* skip malformed geometry */ }
+    }
+    return null;
+  }
+
+  function findBarrioForFeature(feature){
+    if (!barriosData) return null;
+    let centroid;
+    try { centroid = turf.centroid(feature); } catch(e){ return null; }
+    for (const bf of barriosData.features){
+      try {
+        if (turf.booleanPointInPolygon(centroid, bf)) return bf.properties.barrio;
+      } catch(e){}
+    }
+    return null;
+  }
+
+  // ---------- search ----------
+  const resultsEl = document.getElementById('results');
+  const input = document.getElementById('partida-input');
+  document.getElementById('search-btn').addEventListener('click', doSearch);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+
+  function doSearch(){
+    const raw = input.value.trim();
+    if (!raw){ return; }
+    const partida = parseInt(raw, 10);
+    if (isNaN(partida)){
+      resultsEl.innerHTML = `<div class="error">"${escapeHtml(raw)}" no es un número de partida válido. Ingresá solo números.</div>`;
+      return;
+    }
+    resultsEl.innerHTML = `<div class="loading">Buscando partida ${partida}…</div>`;
+
+    const shardId = ((partida % 100) + 100) % 100;
+    const shardKey = String(shardId).padStart(2,'0');
+
+    loadShard(shardKey).then(shardData => {
+      const matches = shardData.features.filter(f => Number(f.properties.partida) === partida);
+      if (matches.length === 0){
+        resultsEl.innerHTML = `<div class="error">No se encontró la partida ${partida} en la base cargada. Puede tratarse de una partida nueva (generada después del último relevamiento) o de un error de tipeo. Revisá el número e intentá de nuevo.</div>`;
+        return;
+      }
+      showParcelResult(matches);
+    }).catch(() => {
+      resultsEl.innerHTML = `<div class="error">No se pudo cargar la información de esa partida. Revisá tu conexión e intentá de nuevo.</div>`;
+    });
+  }
+
+  function loadShard(shardKey){
+    if (shardCache[shardKey]) return Promise.resolve(shardCache[shardKey]);
+    return fetch(`data/parcelas_${shardKey}.geojson`).then(r=>r.json()).then(d=>{
+      shardCache[shardKey] = d;
+      return d;
+    });
+  }
+
+  function showParcelResult(features){
+    // clear previous highlight
+    if (highlightLayer) map.removeLayer(highlightLayer);
+    highlightLayer = L.geoJSON({type:'FeatureCollection', features}, {
+      style: { color: '#B5583A', weight: 3, fillColor:'#B5583A', fillOpacity:0.45 }
+    }).addTo(map);
+    map.fitBounds(highlightLayer.getBounds(), { maxZoom: 18, padding:[30,30] });
+
+    // use first feature as representative for attributes (multi-part parcels share the same partida attrs)
+    const p = features[0].properties;
+    const zone = findZoneForFeature(features[0]);
+    const barrio = p.barrio || findBarrioForFeature(features[0]);
+
+    const dominioClass = p.dominio === 'Fiscal' ? 'fiscal' : 'privado';
+
+    let html = `<div class="card">
+      <span class="badge ${dominioClass}">${escapeHtml(p.dominio || 'Sin dato')}</span>
+      <h2>Partida ${escapeHtml(String(p.partida))}</h2>
+      <dl class="data-list">
+        <div class="row"><dt>Nomenclatura catastral</dt><dd>${escapeHtml(p.nomenclatura || '—')}</dd></div>
+        <div class="row"><dt>Barrio</dt><dd>${escapeHtml(barrio || '—')}</dd></div>
+        <div class="row"><dt>Dirección</dt><dd>${escapeHtml(p.direccion || '—')}</dd></div>
+        <div class="row"><dt>Partes (polígono)</dt><dd>${features.length}</dd></div>
+      </dl>`;
+
+    if (zone){
+      html += `<div class="zone-block">
+        <div class="zname">${escapeHtml(zone.nombre || 'Zona sin nombre')}</div>
+        <div class="zcode">${escapeHtml(zone.codigo || '')}</div>
+        ${zone.uso_predominante ? `<div class="uso"><strong>Uso predominante:</strong> ${escapeHtml(zone.uso_predominante)}</div>` : ''}
+        <div class="indicators">
+          ${indicator('FOS', zone.fos)}
+          ${indicator('FOT', zone.fot)}
+          ${indicator('Altura máx.', zone.altura_max)}
+          ${indicator('Retiro', zone.retiro)}
+          ${indicator('Sup. lote mín.', zone.sup_lote_min)}
+          ${indicator('Sup. lote máx.', zone.sup_lote_max)}
+        </div>
+        ${zone.reglamento ? `<div style="margin-top:8px;font-size:0.78rem;color:var(--ink-soft);">Normativa: ${escapeHtml(zone.reglamento)}</div>` : ''}
+        ${zone.fuente_url ? `<div style="margin-top:4px;"><a href="${escapeAttr(zone.fuente_url)}" target="_blank" rel="noopener">Ver ordenanza en el Digesto Municipal ↗</a></div>` : ''}
+      </div>`;
+    } else {
+      html += `<div class="zone-block"><div class="uso">No se pudo determinar la zona urbanística para esta parcela con los datos disponibles.</div></div>`;
+    }
+
+    html += `</div>`;
+    resultsEl.innerHTML = html;
+  }
+
+  function renderZoneOnly(zoneProps){
+    let html = `<div class="card">
+      <h2>${escapeHtml(zoneProps.nombre || 'Zona')}</h2>
+      <div class="zcode" style="margin-bottom:8px;">${escapeHtml(zoneProps.codigo || '')}</div>
+      ${zoneProps.uso_predominante ? `<div class="uso"><strong>Uso predominante:</strong> ${escapeHtml(zoneProps.uso_predominante)}</div>` : ''}
+      <div class="indicators">
+        ${indicator('FOS', zoneProps.fos)}
+        ${indicator('FOT', zoneProps.fot)}
+        ${indicator('Altura máx.', zoneProps.altura_max)}
+        ${indicator('Retiro', zoneProps.retiro)}
+        ${indicator('Sup. lote mín.', zoneProps.sup_lote_min)}
+        ${indicator('Sup. lote máx.', zoneProps.sup_lote_max)}
+      </div>
+      ${zoneProps.reglamento ? `<div style="margin-top:8px;font-size:0.78rem;color:var(--ink-soft);">Normativa: ${escapeHtml(zoneProps.reglamento)}</div>` : ''}
+      ${zoneProps.fuente_url ? `<div style="margin-top:4px;"><a href="${escapeAttr(zoneProps.fuente_url)}" target="_blank" rel="noopener">Ver ordenanza en el Digesto Municipal ↗</a></div>` : ''}
+      <div class="hint" style="margin-top:10px;">Buscá una partida para ver los datos catastrales de una parcela puntual dentro de esta zona.</div>
+    </div>`;
+    resultsEl.innerHTML = html;
+  }
+
+  function indicator(label, value){
+    const v = (value === undefined || value === null || value === '') ? '—' : value;
+    return `<div class="ind">${escapeHtml(label)}<b>${escapeHtml(String(v))}</b></div>`;
+  }
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function escapeAttr(s){ return escapeHtml(s); }
+
+})();
+</script>
+
+</body>
+</html>
