@@ -1,0 +1,37 @@
+yaml
+name: Reconstruir datos del mapa
+
+# Se ejecuta solo cuando cambia algo dentro de la carpeta source/,
+# o manualmente desde la pestaña "Actions" de GitHub con "Run workflow".
+on:
+  push:
+    paths:
+      - "source/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install pyproj
+
+      - name: Generar archivos en data/
+        run: python build.py
+
+      - name: Publicar los cambios en el repositorio
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Actualización automática de datos del mapa"
+          file_pattern: "data/**"
