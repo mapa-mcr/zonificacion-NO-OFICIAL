@@ -482,14 +482,24 @@
 
     const dominioClass = p.dominio === 'Fiscal' ? 'fiscal' : 'privado';
 
+    const areaM2 = features.reduce((acc, f) => {
+      try { return acc + turf.area(f); } catch(e) { return acc; }
+    }, 0);
+    const superficieTxt = areaM2 > 0
+      ? `${Math.round(areaM2).toLocaleString('es-AR')} m²`
+      : '—';
+
     let html = `<div class="card">
       <span class="badge ${dominioClass}">${escapeHtml(p.dominio || 'Sin dato')}</span>
       <h2>Partida ${escapeHtml(String(p.partida))}</h2>
       <dl class="data-list">
-        <div class="row"><dt>Nomenclatura catastral</dt><dd>${escapeHtml(p.nomenclatura || '—')}</dd></div>
+        <div class="row"><dt>Circunscripción</dt><dd>${escapeHtml(p.circunscripcion ?? '—')}</dd></div>
+        <div class="row"><dt>Sector</dt><dd>${escapeHtml(p.sector ?? '—')}</dd></div>
+        <div class="row"><dt>Manzana</dt><dd>${escapeHtml(p.manzana ?? '—')}</dd></div>
+        <div class="row"><dt>Parcela</dt><dd>${escapeHtml(p.parcela_cat ?? '—')}</dd></div>
         <div class="row"><dt>Barrio</dt><dd>${escapeHtml(barrio || '—')}</dd></div>
         <div class="row"><dt>Dirección</dt><dd>${escapeHtml(p.direccion || '—')}</dd></div>
-        <div class="row"><dt>Partes (polígono)</dt><dd>${features.length}</dd></div>
+        <div class="row"><dt>Superficie</dt><dd>${superficieTxt}</dd></div>
       </dl>`;
 
     if (zone){
