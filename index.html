@@ -224,6 +224,20 @@
     z-index:1000;
   }
 
+  .leaflet-tooltip.partida-label{
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    color: var(--navy);
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff;
+    pointer-events: none;
+  }
+  .leaflet-tooltip.partida-label::before{ display:none; }
+
   @media (max-width: 760px){
     .layout{ flex-direction:column; height:auto; }
     #map{ height:52vh; }
@@ -269,10 +283,15 @@
 
   const map = L.map('map', { zoomControl: true }).setView([-45.8641, -67.4966], 12);
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  const capaCalles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; OpenStreetMap contributors'
   }).addTo(map);
+
+  const capaSatelital = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19,
+    attribution: 'Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics'
+  });
 
   // ---------- color helper: deterministic hash -> HSL, so it adapts if zone codes change ----------
   function colorForCode(code){
@@ -291,7 +310,6 @@
   const ZOOM_MIN_PARCELAS = 15; // recién se dibuja al acercarse a escala manzana
   const parcelasToggle = L.layerGroup(); // capa "vacía" usada solo como interruptor en el control
   let parcelasEnabled = false;
-  let parcelasGeoLayer = null;
   let parcelasLoading = false;
 
   // ---------- load zonificación ----------
@@ -325,10 +343,14 @@
         layer.bindTooltip(f.properties.barrio || '', {sticky:true});
       }
     });
-    L.control.layers(null, {
-      'Límites de barrios': barriosLayer,
-      'Límites de parcelas (recién visible en zoom cercano)': parcelasToggle
-    }, {collapsed:false}).addTo(map);
+    L.control.layers(
+      { 'Mapa de calles': capaCalles, 'Satelital': capaSatelital },
+      {
+        'Límites de barrios': barriosLayer,
+        'Límites y números de parcela (zoom cercano)': parcelasToggle
+      },
+      {collapsed:false}
+    ).addTo(map);
   });
 
   function showToast(msg){
@@ -340,42 +362,67 @@
     document.getElementById('toast').style.display = 'none';
   }
 
+  // Todas las parcelas se cargan una sola vez en memoria (con su bbox
+  // precalculado), pero SOLO se dibujan en el mapa las que caen dentro
+  // del recuadro visible en pantalla en cada momento. Esto es lo que
+  // permite sumar el número de partida sin generar 62.000 etiquetas de
+  // golpe: al hacer zoom o mover el mapa, se recalcula qué mostrar.
+  let parcelasIndex = null; // [{f, bbox}]
+  let parcelasVisibleLayer = null;
+  let renderDebounce = null;
+
   function ensureParcelasLoaded(){
-    if (parcelasGeoLayer || parcelasLoading) return Promise.resolve();
+    if (parcelasIndex || parcelasLoading) return Promise.resolve();
     parcelasLoading = true;
-    showToast('Cargando límites de parcelas (una sola vez)…');
+    showToast('Cargando datos de parcelas (una sola vez)…');
     const keys = Array.from({length:100}, (_,i)=>String(i).padStart(2,'0'));
     return Promise.all(keys.map(loadShard)).then(allShards => {
       const feats = [].concat(...allShards.map(s => s.features));
-      parcelasGeoLayer = L.geoJSON({type:'FeatureCollection', features: feats}, {
-        style: { color:'#152B3C', weight:1, opacity:0.55, fillOpacity:0 },
-        onEachFeature: (f, layer) => {
-          layer.on('click', () => showParcelResult([f]));
-        }
-      });
+      parcelasIndex = feats.map(f => ({ f, bbox: turf.bbox(f) }));
       parcelasLoading = false;
       hideToast();
-      updateParcelasVisibility();
+      renderVisibleParcelas();
     }).catch(() => {
       parcelasLoading = false;
-      showToast('No se pudieron cargar los límites de parcelas. Probá de nuevo.');
+      showToast('No se pudieron cargar los datos de parcelas. Probá de nuevo.');
       setTimeout(hideToast, 4000);
     });
   }
 
-  function updateParcelasVisibility(){
-    if (!parcelasGeoLayer) return;
-    const shouldShow = parcelasEnabled && map.getZoom() >= ZOOM_MIN_PARCELAS;
-    if (shouldShow && !map.hasLayer(parcelasGeoLayer)) map.addLayer(parcelasGeoLayer);
-    if (!shouldShow && map.hasLayer(parcelasGeoLayer)) map.removeLayer(parcelasGeoLayer);
+  function renderVisibleParcelas(){
+    if (parcelasVisibleLayer){ map.removeLayer(parcelasVisibleLayer); parcelasVisibleLayer = null; }
+    if (!parcelasEnabled || !parcelasIndex) return;
+    if (map.getZoom() < ZOOM_MIN_PARCELAS) return;
+
+    const b = map.getBounds();
+    const west = b.getWest(), east = b.getEast(), south = b.getSouth(), north = b.getNorth();
+    const visibles = parcelasIndex
+      .filter(({bbox}) => !(bbox[2] < west || bbox[0] > east || bbox[3] < south || bbox[1] > north))
+      .map(({f}) => f);
+
+    parcelasVisibleLayer = L.geoJSON({type:'FeatureCollection', features: visibles}, {
+      style: { color:'#152B3C', weight:1, opacity:0.6, fillOpacity:0 },
+      onEachFeature: (f, layer) => {
+        layer.on('click', () => showParcelResult([f]));
+        const partida = f.properties.partida;
+        if (partida !== undefined && partida !== null){
+          layer.bindTooltip(String(partida), { permanent:true, direction:'center', className:'partida-label' });
+        }
+      }
+    }).addTo(map);
+  }
+
+  function scheduleRenderVisibleParcelas(){
+    clearTimeout(renderDebounce);
+    renderDebounce = setTimeout(renderVisibleParcelas, 150);
   }
 
   map.on('overlayadd', e => {
     if (e.layer === parcelasToggle){
       parcelasEnabled = true;
-      ensureParcelasLoaded().then(updateParcelasVisibility);
-      if (parcelasGeoLayer && map.getZoom() < ZOOM_MIN_PARCELAS){
-        showToast('Acercate al mapa (zoom de manzana) para ver los límites de parcelas.');
+      ensureParcelasLoaded().then(renderVisibleParcelas);
+      if (parcelasIndex && map.getZoom() < ZOOM_MIN_PARCELAS){
+        showToast('Acercate al mapa (zoom de manzana) para ver límites y números de partida.');
         setTimeout(hideToast, 4000);
       }
     }
@@ -383,10 +430,11 @@
   map.on('overlayremove', e => {
     if (e.layer === parcelasToggle){
       parcelasEnabled = false;
-      updateParcelasVisibility();
+      renderVisibleParcelas();
     }
   });
-  map.on('zoomend', updateParcelasVisibility);
+  map.on('zoomend', scheduleRenderVisibleParcelas);
+  map.on('moveend', scheduleRenderVisibleParcelas);
 
   function buildLegend(codes){
     const div = L.control({position:'bottomleft'});
@@ -499,6 +547,7 @@
         <div class="row"><dt>Parcela</dt><dd>${escapeHtml(p.parcela_cat ?? '—')}</dd></div>
         <div class="row"><dt>Barrio</dt><dd>${escapeHtml(barrio || '—')}</dd></div>
         <div class="row"><dt>Dirección</dt><dd>${escapeHtml(p.direccion || '—')}</dd></div>
+        <div class="row"><dt>Superficie</dt><dd>${superficieTxt}</dd></div>
       </dl>`;
 
     if (zone){
