@@ -290,6 +290,8 @@
 
   const capaSatelital = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
     maxZoom: 19,
+    maxNativeZoom: 17, // Comodoro Rivadavia no tiene fotos de mayor resolución cargadas en este servicio;
+                        // más allá de este nivel, Leaflet estira la última imagen real en vez de mostrar un tile vacío.
     attribution: 'Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics'
   });
 
