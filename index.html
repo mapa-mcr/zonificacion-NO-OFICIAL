@@ -193,12 +193,28 @@
     padding:8px 10px;
     font-size:0.72rem;
     line-height:1.5;
-    max-height:220px;
-    overflow-y:auto;
     box-shadow:0 1px 4px rgba(0,0,0,0.2);
     border-radius:2px;
+    max-width:72vw;
   }
-  .legend div{ display:flex; align-items:center; gap:6px; margin-bottom:2px;}
+  .legend .legend-title{
+    cursor:pointer;
+    user-select:none;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+    font-size:0.74rem;
+  }
+  .legend .legend-body{
+    max-height:220px;
+    overflow-y:auto;
+    margin-top:6px;
+  }
+  .legend.collapsed .legend-body{ display:none; }
+  .legend .legend-arrow{ font-size:0.7rem; transition: transform 0.15s; }
+  .legend.collapsed .legend-arrow{ transform: rotate(-90deg); }
+  .legend div.row-zona{ display:flex; align-items:center; gap:6px; margin-bottom:2px;}
   .legend span.sw{ width:11px; height:11px; display:inline-block; border:1px solid rgba(0,0,0,0.35); flex-shrink:0;}
 
   .disclaimer{
@@ -239,10 +255,14 @@
   .leaflet-tooltip.partida-label::before{ display:none; }
 
   @media (max-width: 760px){
+    header{ padding:10px 14px; gap:4px; }
+    header h1{ font-size:1.02rem; line-height:1.25; }
+    header .tag{ font-size:0.68rem; }
     .layout{ flex-direction:column; height:auto; }
-    #map{ height:52vh; }
+    #map{ height:46vh; min-height:260px; }
     .panel{ width:100%; max-width:100%; border-left:none; border-top:1px solid var(--line); }
     .results{ max-height:38vh; }
+    .legend .legend-body{ max-height:150px; }
   }
 </style>
 </head>
@@ -461,10 +481,9 @@
     const div = L.control({position:'bottomleft'});
     div.onAdd = function(){
       const el = L.DomUtil.create('div','legend');
-      let html = '<strong style="font-size:0.74rem;">Zonificación</strong><br>';
+      const esMobile = window.matchMedia('(max-width: 760px)').matches;
+      if (esMobile) el.classList.add('collapsed');
 
-      // cuenta cuántas variantes distintas hay por código, para saber
-      // cuándo hace falta aclarar la normativa y cuándo no
       const porCodigo = new Map();
       grupos.forEach(p => {
         const c = p.codigo || 'SIN_CODIGO';
@@ -472,15 +491,23 @@
       });
 
       const entradas = [...grupos.entries()].sort((a,b) => (a[1].codigo||'').localeCompare(b[1].codigo||''));
+      let filas = '';
       entradas.forEach(([grupo, p]) => {
         const c = p.codigo || 'SIN_CODIGO';
         const tieneVariantes = porCodigo.get(c) > 1;
         const etiqueta = tieneVariantes && p.reglamento
           ? `${c} — ${p.nombre||''} (${p.reglamento})`
           : `${c} — ${p.nombre||''}`;
-        html += `<div><span class="sw" style="background:${colorForGrupo(grupo)}"></span> ${etiqueta}</div>`;
+        filas += `<div class="row-zona"><span class="sw" style="background:${colorForGrupo(grupo)}"></span> ${etiqueta}</div>`;
       });
-      el.innerHTML = html;
+
+      el.innerHTML = `
+        <div class="legend-title">Zonificación <span class="legend-arrow">▾</span></div>
+        <div class="legend-body">${filas}</div>
+      `;
+      el.querySelector('.legend-title').addEventListener('click', () => {
+        el.classList.toggle('collapsed');
+      });
       L.DomEvent.disableClickPropagation(el);
       return el;
     };
@@ -538,6 +565,9 @@
         return;
       }
       showParcelResult(matches);
+      const url = new URL(window.location);
+      url.searchParams.set('partida', partida);
+      history.replaceState(null, '', url);
     }).catch(() => {
       resultsEl.innerHTML = `<div class="error">No se pudo cargar la información de esa partida. Revisá tu conexión e intentá de nuevo.</div>`;
     });
@@ -549,6 +579,14 @@
       shardCache[shardKey] = d;
       return d;
     });
+  }
+
+  // Si la página se abre con un link compartido (ej. ...?partida=37679),
+  // precarga esa búsqueda sola.
+  const partidaDeLaUrl = new URL(window.location).searchParams.get('partida');
+  if (partidaDeLaUrl){
+    input.value = partidaDeLaUrl;
+    doSearch();
   }
 
   function showParcelResult(features){
@@ -608,8 +646,23 @@
       html += `<div class="zone-block"><div class="uso">No se pudo determinar la zona urbanística para esta parcela con los datos disponibles.</div></div>`;
     }
 
+    html += `<div style="margin-top:12px;">
+      <button id="copy-link-btn" style="background:none;border:1px solid var(--line);color:var(--navy-2);font-size:0.76rem;padding:6px 10px;border-radius:2px;cursor:pointer;">Copiar link a esta partida</button>
+    </div>`;
     html += `</div>`;
     resultsEl.innerHTML = html;
+
+    const copyBtn = document.getElementById('copy-link-btn');
+    if (copyBtn){
+      copyBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(window.location.href).then(() => {
+          copyBtn.textContent = 'Link copiado ✓';
+          setTimeout(() => { copyBtn.textContent = 'Copiar link a esta partida'; }, 2000);
+        }).catch(() => {
+          copyBtn.textContent = 'No se pudo copiar';
+        });
+      });
+    }
   }
 
   function renderZoneOnly(zoneProps){
