@@ -295,11 +295,18 @@
     attribution: 'Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics'
   });
 
-  // ---------- color helper: deterministic hash -> HSL, so it adapts if zone codes change ----------
-  function colorForCode(code){
-    code = code || 'SIN_CODIGO';
+  // ---------- color helper: agrupa por código + normativa, no solo por código.
+  // Esto es necesario porque dentro de un mismo código (ej. "ZU") pueden convivir
+  // sub-zonas con reglas distintas (ej. Ord. 3614/90 lisa y llana vs. Ord. 3614/90
+  // + 2969/87, que trae FOS/FOT distintos para trama y arteria). Agrupar solo por
+  // código las pintaría igual en el mapa aunque tengan indicadores urbanísticos
+  // distintos. ----------
+  function grupoDeZona(props){
+    return `${props.codigo || 'SIN_CODIGO'}|${props.reglamento || ''}`;
+  }
+  function colorForGrupo(grupo){
     let hash = 0;
-    for (let i=0;i<code.length;i++){ hash = code.charCodeAt(i) + ((hash<<5)-hash); }
+    for (let i=0;i<grupo.length;i++){ hash = grupo.charCodeAt(i) + ((hash<<5)-hash); }
     const hue = Math.abs(hash) % 360;
     return `hsl(${hue}, 58%, 55%)`;
   }
@@ -307,6 +314,7 @@
   let zonasLayer, barriosLayer, highlightLayer;
   let zonasData, barriosData;
   const shardCache = {};
+  const zonasToggle = L.layerGroup();
 
   // ---------- capa de límites de parcelas (a demanda, con corte por zoom) ----------
   const ZOOM_MIN_PARCELAS = 15; // recién se dibuja al acercarse a escala manzana
@@ -315,29 +323,30 @@
   let parcelasLoading = false;
 
   // ---------- load zonificación ----------
-  fetch('data/zonificacion_final.geojson').then(r=>r.json()).then(data=>{
+  const zonasReady = fetch('data/zonificacion_final.geojson').then(r=>r.json()).then(data=>{
     zonasData = data;
-    const legendCodes = new Map();
+    const gruposVistos = new Map(); // grupo -> {codigo, nombre, reglamento}
     zonasLayer = L.geoJSON(data, {
       style: f => ({
         color: '#33413C',
         weight: 1,
-        fillColor: colorForCode(f.properties.codigo),
+        fillColor: colorForGrupo(grupoDeZona(f.properties)),
         fillOpacity: 0.35
       }),
       onEachFeature: (f, layer) => {
         const p = f.properties;
-        if (p.codigo) legendCodes.set(p.codigo, p.nombre);
+        const grupo = grupoDeZona(p);
+        if (p.codigo) gruposVistos.set(grupo, p);
         layer.on('click', () => renderZoneOnly(p));
         layer.bindTooltip(`${p.codigo || ''} — ${p.nombre || ''}`, {sticky:true});
       }
-    }).addTo(map);
-
-    buildLegend(legendCodes);
+    });
+    buildLegend(gruposVistos);
+    return zonasLayer;
   });
 
   // ---------- load barrios (outline only, toggle) ----------
-  fetch('data/barrios_final.geojson').then(r=>r.json()).then(data=>{
+  const barriosReady = fetch('data/barrios_final.geojson').then(r=>r.json()).then(data=>{
     barriosData = data;
     barriosLayer = L.geoJSON(data, {
       style: { color:'#152B3C', weight:1.4, fill:false, dashArray:'4,3' },
@@ -345,14 +354,24 @@
         layer.bindTooltip(f.properties.barrio || '', {sticky:true});
       }
     });
+    return barriosLayer;
+  });
+
+  Promise.all([zonasReady, barriosReady]).then(([zonas, barrios]) => {
+    zonas.addTo(map); // la zonificación arranca visible; el interruptor permite apagarla
+
     L.control.layers(
       { 'Mapa de calles': capaCalles, 'Satelital': capaSatelital },
       {
-        'Límites de barrios': barriosLayer,
+        'Zonificación': zonasToggle,
+        'Límites de barrios': barrios,
         'Límites y números de parcela (zoom cercano)': parcelasToggle
       },
       {collapsed:false}
     ).addTo(map);
+
+    map.on('overlayadd', e => { if (e.layer === zonasToggle) map.addLayer(zonas); });
+    map.on('overlayremove', e => { if (e.layer === zonasToggle) map.removeLayer(zonas); });
   });
 
   function showToast(msg){
@@ -438,13 +457,28 @@
   map.on('zoomend', scheduleRenderVisibleParcelas);
   map.on('moveend', scheduleRenderVisibleParcelas);
 
-  function buildLegend(codes){
+  function buildLegend(grupos){
     const div = L.control({position:'bottomleft'});
     div.onAdd = function(){
       const el = L.DomUtil.create('div','legend');
       let html = '<strong style="font-size:0.74rem;">Zonificación</strong><br>';
-      [...codes.entries()].sort().forEach(([code,name])=>{
-        html += `<div><span class="sw" style="background:${colorForCode(code)}"></span> ${code} — ${name||''}</div>`;
+
+      // cuenta cuántas variantes distintas hay por código, para saber
+      // cuándo hace falta aclarar la normativa y cuándo no
+      const porCodigo = new Map();
+      grupos.forEach(p => {
+        const c = p.codigo || 'SIN_CODIGO';
+        porCodigo.set(c, (porCodigo.get(c) || 0) + 1);
+      });
+
+      const entradas = [...grupos.entries()].sort((a,b) => (a[1].codigo||'').localeCompare(b[1].codigo||''));
+      entradas.forEach(([grupo, p]) => {
+        const c = p.codigo || 'SIN_CODIGO';
+        const tieneVariantes = porCodigo.get(c) > 1;
+        const etiqueta = tieneVariantes && p.reglamento
+          ? `${c} — ${p.nombre||''} (${p.reglamento})`
+          : `${c} — ${p.nombre||''}`;
+        html += `<div><span class="sw" style="background:${colorForGrupo(grupo)}"></span> ${etiqueta}</div>`;
       });
       el.innerHTML = html;
       L.DomEvent.disableClickPropagation(el);
