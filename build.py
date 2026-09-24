@@ -2,32 +2,42 @@
 build.py
 ---------
 Reconstruye los archivos de datos que usa el mapa (carpeta data/) a partir
-de los archivos GeoJSON exportados desde QGIS que se colocan en source/.
+de los archivos que se colocan en source/.
 
 Este script lo corre automáticamente GitHub Actions cada vez que se sube
 un archivo nuevo a source/. No hace falta ejecutarlo a mano ni entender
-el código para usarlo: solo hay que exportar desde QGIS con los nombres
-de archivo correctos (ver LEEME.md) y subirlos a source/.
+el código para usarlo.
 
-Archivos esperados en source/:
+Archivos esperados en source/ (ver LEEME.md para el detalle de cada uno):
   - barrios.geojson
-  - inmuebles_fiscales.geojson
-  - inmuebles_privados.geojson
-  - zonificacion.geojson
+  - zonificacion.geojson, zonificacion.kml o zonificacion.kmz (cualquiera de los tres formatos sirve)
+  - parcelario.geojson  → un solo archivo con todas las parcelas juntas (formato nuevo, sin dato de dominio fiscal/privado)
+    o, si no existe ese archivo:
+  - inmuebles_fiscales.geojson + inmuebles_privados.geojson → el formato viejo, separado en dos capas con dominio Fiscal/Privado
 """
-import json, re, os
+import json, re, os, zipfile, io
 from pyproj import Transformer
+from lxml import etree
 
 SOURCE = "source"
 OUT = "data"
 NSHARDS = 100
 
 # Campos que NUNCA se publican porque identifican a personas
-# (adjudicatario/ocupante/etc). Ver LEEME.md para el porqué.
+# (adjudicatario/ocupante/etc). Se comparan en minúscula, así que da
+# igual cómo vengan capitalizados en el archivo de origen.
 CAMPOS_SENSIBLES = {
     "apellido_nombre", "posesion", "fecha_expte",
-    "categoria", "categoria ", "propietario_tierras_fiscales", "codigo_pos",
+    "categoria", "propietario_tierras_fiscales", "codigo_pos",
 }
+
+KML_NS = {"kml": "http://www.opengis.net/kml/2.2"}
+
+
+def lower_keys(d):
+    """Copia un diccionario de propiedades con todas las claves en minúscula,
+    para no depender de cómo venga capitalizado cada archivo de origen."""
+    return {(k or "").lower(): v for k, v in d.items()}
 
 
 def get_transformer(geojson):
@@ -70,13 +80,93 @@ def parse_zonificacion_desc(html):
     return result
 
 
+def _kml_coords_to_ring(coords_text):
+    ring = []
+    for tok in coords_text.split():
+        parts = tok.strip().split(",")
+        if len(parts) >= 2:
+            ring.append([float(parts[0]), float(parts[1])])
+    return ring
+
+
+def _kml_polygon_to_geojson(polygon_el):
+    outer = polygon_el.find("./kml:outerBoundaryIs/kml:LinearRing/kml:coordinates", KML_NS)
+    if outer is None or not outer.text:
+        return None
+    rings = [_kml_coords_to_ring(outer.text)]
+    for inner in polygon_el.findall("./kml:innerBoundaryIs/kml:LinearRing/kml:coordinates", KML_NS):
+        if inner.text:
+            rings.append(_kml_coords_to_ring(inner.text))
+    return rings
+
+
+def load_kml_as_geojson(raw_bytes):
+    """Convierte un KML (ya sea el contenido de un .kml o el doc.kml
+    adentro de un .kmz) en un FeatureCollection GeoJSON, conservando el
+    campo 'description' con la tabla HTML tal cual la escribió QGIS/Google
+    Earth, para que parse_zonificacion_desc la siga entendiendo igual."""
+    parser = etree.XMLParser(recover=True)
+    root = etree.fromstring(raw_bytes, parser=parser)
+    features = []
+    for pm in root.findall(".//kml:Placemark", KML_NS):
+        name_el = pm.find("kml:name", KML_NS)
+        desc_el = pm.find("kml:description", KML_NS)
+        name = name_el.text if name_el is not None else None
+        description = desc_el.text if desc_el is not None else None
+
+        polygons = pm.findall(".//kml:Polygon", KML_NS)
+        rings_list = [r for r in (_kml_polygon_to_geojson(p) for p in polygons) if r]
+        if not rings_list:
+            continue
+        if len(rings_list) == 1:
+            geometry = {"type": "Polygon", "coordinates": rings_list[0]}
+        else:
+            geometry = {"type": "MultiPolygon", "coordinates": [r for r in rings_list]}
+
+        features.append({
+            "type": "Feature",
+            "properties": {"Name": name, "description": description},
+            "geometry": geometry,
+        })
+    return {"type": "FeatureCollection", "features": features}
+
+
+def load_zonificacion_source():
+    """Busca la capa de zonificación en source/ sin importar en qué
+    formato la hayan exportado: GeoJSON, KML o KMZ."""
+    for fname in ("zonificacion.geojson",):
+        path = os.path.join(SOURCE, fname)
+        if os.path.exists(path):
+            data = json.load(open(path, encoding="utf-8"))
+            return data, get_transformer(data)
+
+    for fname in ("zonificacion.kmz",):
+        path = os.path.join(SOURCE, fname)
+        if os.path.exists(path):
+            with zipfile.ZipFile(path) as z:
+                kml_name = next(n for n in z.namelist() if n.lower().endswith(".kml"))
+                raw = z.read(kml_name)
+            return load_kml_as_geojson(raw), None
+
+    for fname in ("zonificacion.kml",):
+        path = os.path.join(SOURCE, fname)
+        if os.path.exists(path):
+            raw = open(path, "rb").read()
+            return load_kml_as_geojson(raw), None
+
+    raise FileNotFoundError(
+        "No encontré la capa de zonificación en source/. Subí zonificacion.geojson, "
+        "zonificacion.kml o zonificacion.kmz."
+    )
+
+
 def build_barrios():
     path = os.path.join(SOURCE, "barrios.geojson")
     data = json.load(open(path, encoding="utf-8"))
     transformer = get_transformer(data)
     out = {"type": "FeatureCollection", "features": []}
     for f in data["features"]:
-        p = f["properties"]
+        p = lower_keys(f["properties"])
         geom = f["geometry"]
         if not geom or not geom.get("coordinates"):
             continue
@@ -98,9 +188,7 @@ def build_barrios():
 
 
 def build_zonificacion():
-    path = os.path.join(SOURCE, "zonificacion.geojson")
-    data = json.load(open(path, encoding="utf-8"))
-    transformer = get_transformer(data)
+    data, transformer = load_zonificacion_source()
     out = {"type": "FeatureCollection", "features": []}
     parsed = []
     for f in data["features"]:
@@ -123,7 +211,9 @@ def build_zonificacion():
             "altura_max": d.get("IN-URB_HM") or p.get("altura_max"),
             "retiro": d.get("IN-URB_RET") or p.get("retiro"),
             "densidad_hab": d.get("DENS_HAB") or p.get("densidad_hab"),
-            "superficie_ha": d.get("HA") or p.get("superficie_ha"),
+            # el nombre de este campo cambió entre relevamientos ("HA" -> "SUP(HA)");
+            # se prueban ambos para no depender de cuál venga en el archivo nuevo.
+            "superficie_ha": d.get("SUP(HA)") or d.get("HA") or p.get("superficie_ha"),
         }
         parsed.append((props, geom))
 
@@ -163,7 +253,8 @@ def build_zonificacion():
 
 def build_nomenclatura(p):
     """Devuelve los 4 componentes catastrales relevantes por separado
-    (se descartan departamento y ejido, que no se muestran en la web)."""
+    (se descartan departamento y ejido, que no se muestran en la web).
+    p ya debe tener las claves en minúscula (ver lower_keys)."""
     return {
         "circunscripcion": p.get("circun"),
         "sector": p.get("sector"),
@@ -172,45 +263,73 @@ def build_nomenclatura(p):
     }
 
 
+def _procesar_features(features, transformer, dominio, shards):
+    n = 0
+    for f in features:
+        p = lower_keys(f["properties"])
+        p = {k: v for k, v in p.items() if k not in CAMPOS_SENSIBLES}
+        geom = f["geometry"]
+        if not geom or not geom.get("coordinates"):
+            continue
+        partida = p.get("partida")
+        if partida is None:
+            continue
+        direccion = None
+        if p.get("calles"):
+            direccion = f"{p.get('calles')} {p.get('numero') or ''}".strip()
+        props = {
+            "partida": partida,
+            **build_nomenclatura(p),
+            "barrio": p.get("barrios"),
+            "direccion": direccion,
+        }
+        if dominio is not None:
+            props["dominio"] = dominio
+        new_geom = {
+            "type": geom["type"],
+            "coordinates": reproject_coords(geom["coordinates"], transformer),
+        }
+        shard_id = int(partida) % NSHARDS
+        shards[shard_id]["features"].append({
+            "type": "Feature", "properties": props, "geometry": new_geom
+        })
+        n += 1
+    return n
+
+
 def build_parcelas():
     shards = {i: {"type": "FeatureCollection", "features": []} for i in range(NSHARDS)}
 
-    for fname, dominio in [
-        ("inmuebles_fiscales.geojson", "Fiscal"),
-        ("inmuebles_privados.geojson", "Privado"),
-    ]:
-        path = os.path.join(SOURCE, fname)
-        data = json.load(open(path, encoding="utf-8"))
+    combinado_path = os.path.join(SOURCE, "parcelario.geojson")
+    fiscal_path = os.path.join(SOURCE, "inmuebles_fiscales.geojson")
+    privado_path = os.path.join(SOURCE, "inmuebles_privados.geojson")
+
+    if os.path.exists(combinado_path):
+        # Formato nuevo: una sola capa con todas las parcelas, sin dato
+        # de dominio fiscal/privado (no viene en el archivo de origen).
+        data = json.load(open(combinado_path, encoding="utf-8"))
         transformer = get_transformer(data)
-        n = 0
-        for f in data["features"]:
-            p = {k: v for k, v in f["properties"].items() if k not in CAMPOS_SENSIBLES}
-            geom = f["geometry"]
-            if not geom or not geom.get("coordinates"):
-                continue
-            partida = p.get("partida")
-            if partida is None:
-                continue
-            direccion = None
-            if p.get("calles"):
-                direccion = f"{p.get('calles')} {p.get('numero') or ''}".strip()
-            props = {
-                "partida": partida,
-                "dominio": dominio,
-                **build_nomenclatura(p),
-                "barrio": p.get("barrios"),
-                "direccion": direccion,
-            }
-            new_geom = {
-                "type": geom["type"],
-                "coordinates": reproject_coords(geom["coordinates"], transformer),
-            }
-            shard_id = int(partida) % NSHARDS
-            shards[shard_id]["features"].append({
-                "type": "Feature", "properties": props, "geometry": new_geom
-            })
-            n += 1
-        print(f"{fname}: {n} features")
+        n = _procesar_features(data["features"], transformer, dominio=None, shards=shards)
+        print(f"parcelario.geojson: {n} features (sin dato de dominio fiscal/privado)")
+
+    elif os.path.exists(fiscal_path) and os.path.exists(privado_path):
+        # Formato viejo: dos capas separadas, cada una aporta su dominio.
+        for fname, dominio in [
+            ("inmuebles_fiscales.geojson", "Fiscal"),
+            ("inmuebles_privados.geojson", "Privado"),
+        ]:
+            path = os.path.join(SOURCE, fname)
+            data = json.load(open(path, encoding="utf-8"))
+            transformer = get_transformer(data)
+            n = _procesar_features(data["features"], transformer, dominio=dominio, shards=shards)
+            print(f"{fname}: {n} features")
+
+    else:
+        raise FileNotFoundError(
+            "No encontré datos de parcelario en source/. Subí parcelario.geojson "
+            "(formato combinado) o inmuebles_fiscales.geojson + inmuebles_privados.geojson "
+            "(formato separado)."
+        )
 
     for i in range(NSHARDS):
         out_path = os.path.join(OUT, f"parcelas_{i:02d}.geojson")

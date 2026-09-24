@@ -530,7 +530,9 @@
     const zone = findZoneForFeature(features[0]);
     const barrio = p.barrio || findBarrioForFeature(features[0]);
 
-    const dominioClass = p.dominio === 'Fiscal' ? 'fiscal' : 'privado';
+    const badgeHtml = p.dominio
+      ? `<span class="badge ${p.dominio === 'Fiscal' ? 'fiscal' : 'privado'}">${escapeHtml(p.dominio)}</span>`
+      : '';
 
     const areaM2 = features.reduce((acc, f) => {
       try { return acc + turf.area(f); } catch(e) { return acc; }
@@ -540,7 +542,7 @@
       : '—';
 
     let html = `<div class="card">
-      <span class="badge ${dominioClass}">${escapeHtml(p.dominio || 'Sin dato')}</span>
+      ${badgeHtml}
       <h2>Partida ${escapeHtml(String(p.partida))}</h2>
       <dl class="data-list">
         <div class="row"><dt>Circunscripción</dt><dd>${escapeHtml(p.circunscripcion ?? '—')}</dd></div>
