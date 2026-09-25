@@ -217,12 +217,22 @@
   .legend div.row-zona{ display:flex; align-items:center; gap:6px; margin-bottom:2px;}
   .legend span.sw{ width:11px; height:11px; display:inline-block; border:1px solid rgba(0,0,0,0.35); flex-shrink:0;}
 
-  .disclaimer{
-    padding:10px 16px;
+  .disclaimer-details{
+    border-top:1px solid var(--line);
+    background: var(--paper);
+  }
+  .disclaimer-details summary{
+    padding:8px 16px;
     font-size:0.72rem;
     color: var(--ink-soft);
-    background: var(--paper);
-    border-top:1px solid var(--line);
+    cursor:pointer;
+    user-select:none;
+  }
+  .disclaimer-details[open] summary{ padding-bottom:2px; }
+  .disclaimer{
+    padding:0 16px 10px;
+    font-size:0.72rem;
+    color: var(--ink-soft);
     line-height:1.4;
   }
 
@@ -259,9 +269,10 @@
     header h1{ font-size:1.02rem; line-height:1.25; }
     header .tag{ font-size:0.68rem; }
     .layout{ flex-direction:column; height:auto; }
-    #map{ height:46vh; min-height:260px; }
+    #map{ height:68vh; min-height:320px; }
     .panel{ width:100%; max-width:100%; border-left:none; border-top:1px solid var(--line); }
-    .results{ max-height:38vh; }
+    .results{ max-height:none; }
+    .results .empty{ display:none; }
     .legend .legend-body{ max-height:150px; }
   }
 </style>
@@ -288,9 +299,12 @@
     <div class="results" id="results">
       <div class="empty">Ingresá un número de partida inmobiliaria para ver su zona urbana, indicadores urbanísticos y datos catastrales.</div>
     </div>
-    <div class="disclaimer">
-      Datos catastrales relevados en 2022–2023 y zonificación vigente al momento de su carga. Puede haber cambios posteriores no reflejados acá. Este mapa es un proyecto comunitario independiente, no reemplaza la información oficial del Municipio o el Catastro provincial.
-    </div>
+    <details class="disclaimer-details" open>
+      <summary>Sobre estos datos</summary>
+      <div class="disclaimer">
+        Datos catastrales relevados en 2022–2023 y zonificación vigente al momento de su carga. Puede haber cambios posteriores no reflejados acá. Este mapa es un proyecto comunitario independiente, no reemplaza la información oficial del Municipio o el Catastro provincial.
+      </div>
+    </details>
   </div>
 </div>
 
@@ -300,6 +314,11 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js"></script>
 <script>
 (function(){
+
+  if (window.matchMedia('(max-width: 760px)').matches){
+    const det = document.querySelector('.disclaimer-details');
+    if (det) det.removeAttribute('open');
+  }
 
   const map = L.map('map', { zoomControl: true }).setView([-45.8641, -67.4966], 12);
 
@@ -387,7 +406,7 @@
         'Límites de barrios': barrios,
         'Límites y números de parcela (zoom cercano)': parcelasToggle
       },
-      {collapsed:false}
+      {collapsed: window.matchMedia('(max-width: 760px)').matches}
     ).addTo(map);
 
     map.on('overlayadd', e => { if (e.layer === zonasToggle) map.addLayer(zonas); });
@@ -639,8 +658,7 @@
           ${indicator('Sup. lote mín.', zone.sup_lote_min)}
           ${indicator('Sup. lote máx.', zone.sup_lote_max)}
         </div>
-        ${zone.reglamento ? `<div style="margin-top:8px;font-size:0.78rem;color:var(--ink-soft);">Normativa: ${escapeHtml(zone.reglamento)}</div>` : ''}
-        ${zone.fuente_url ? `<div style="margin-top:4px;"><a href="${escapeAttr(zone.fuente_url)}" target="_blank" rel="noopener">Ver ordenanza en el Digesto Municipal ↗</a></div>` : ''}
+        ${normasHtml(zone)}
       </div>`;
     } else {
       html += `<div class="zone-block"><div class="uso">No se pudo determinar la zona urbanística para esta parcela con los datos disponibles.</div></div>`;
@@ -678,8 +696,7 @@
         ${indicator('Sup. lote mín.', zoneProps.sup_lote_min)}
         ${indicator('Sup. lote máx.', zoneProps.sup_lote_max)}
       </div>
-      ${zoneProps.reglamento ? `<div style="margin-top:8px;font-size:0.78rem;color:var(--ink-soft);">Normativa: ${escapeHtml(zoneProps.reglamento)}</div>` : ''}
-      ${zoneProps.fuente_url ? `<div style="margin-top:4px;"><a href="${escapeAttr(zoneProps.fuente_url)}" target="_blank" rel="noopener">Ver ordenanza en el Digesto Municipal ↗</a></div>` : ''}
+      ${normasHtml(zoneProps)}
       <div class="hint" style="margin-top:10px;">Buscá una partida para ver los datos catastrales de una parcela puntual dentro de esta zona.</div>
     </div>`;
     resultsEl.innerHTML = html;
@@ -688,6 +705,17 @@
   function indicator(label, value){
     const v = (value === undefined || value === null || value === '') ? '—' : value;
     return `<div class="ind">${escapeHtml(label)}<b>${escapeHtml(String(v))}</b></div>`;
+  }
+
+  function normasHtml(zone){
+    const normas = zone.normas || [];
+    let html = zone.reglamento
+      ? `<div style="margin-top:8px;font-size:0.78rem;color:var(--ink-soft);">Normativa: ${escapeHtml(zone.reglamento)}</div>`
+      : '';
+    normas.forEach(n => {
+      html += `<div style="margin-top:4px;"><a href="${escapeAttr(n.url)}" target="_blank" rel="noopener">Ver ${escapeHtml(n.texto)} en el Digesto Municipal ↗</a></div>`;
+    });
+    return html;
   }
 
   function escapeHtml(s){
