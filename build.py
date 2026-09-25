@@ -187,21 +187,49 @@ def build_barrios():
     print(f"barrios: {len(out['features'])} features")
 
 
+# Links al Digesto Municipal confirmados a mano por Leo (no adivinados).
+# Formato: (texto que debe aparecer dentro de "reglamento", etiqueta a mostrar, URL).
+# Se revisan en este orden y una zona puede matchear más de uno (ej. una zona
+# regida a la vez por la 3614/90 y la 2969/87 muestra los dos links).
+NORMAS_CONOCIDAS = [
+    ("3614", "Ord. 3614 y modificatorias", "https://www.digestocomodoro.gob.ar/verNorma.aspx?ID_NORMA=21"),
+    ("2969/87", "Ord. 2969/87", "https://www.digestocomodoro.gob.ar/verNorma.aspx?ID_NORMA=787"),
+    ("2969-87", "Ord. 2969/87", "https://www.digestocomodoro.gob.ar/verNorma.aspx?ID_NORMA=787"),
+]
+
+
+def normas_para_reglamento(reglamento, fuente_del_archivo):
+    reglamento = reglamento or ""
+    normas = []
+    urls_usadas = set()
+    for patron, texto, url in NORMAS_CONOCIDAS:
+        if patron in reglamento and url not in urls_usadas:
+            normas.append({"texto": texto, "url": url})
+            urls_usadas.add(url)
+    # si el archivo de origen trae su propio link y no es ninguno de los ya
+    # confirmados arriba, se conserva también (puede ser una normativa más
+    # específica que alguien haya cargado a mano en QGIS)
+    if fuente_del_archivo and fuente_del_archivo.startswith("http") and fuente_del_archivo not in urls_usadas:
+        normas.append({"texto": reglamento or "Normativa", "url": fuente_del_archivo})
+    return normas
+
+
 def build_zonificacion():
     data, transformer = load_zonificacion_source()
     out = {"type": "FeatureCollection", "features": []}
-    parsed = []
     for f in data["features"]:
         p = f["properties"]
         geom = f["geometry"]
         if not geom or not geom.get("coordinates"):
             continue
         d = parse_zonificacion_desc(p.get("description"))
+        reglamento = d.get("REGLAMENT") or p.get("reglamento")
+        fuente_del_archivo = d.get("Fuente") or p.get("fuente_url")
         props = {
             "nombre": d.get("Nombre") or p.get("Name") or p.get("nombre"),
             "codigo": d.get("Codigo") or p.get("codigo"),
-            "reglamento": d.get("REGLAMENT") or p.get("reglamento"),
-            "fuente_url": d.get("Fuente") or p.get("fuente_url"),
+            "reglamento": reglamento,
+            "normas": normas_para_reglamento(reglamento, fuente_del_archivo),
             "uso_predominante": d.get("USO_AD-PRE") or p.get("uso_predominante"),
             "uso_complementario": d.get("USO_COMPLE") or p.get("uso_complementario"),
             "sup_lote_min": d.get("SUB_SUP_MI") or p.get("sup_lote_min"),
@@ -215,28 +243,6 @@ def build_zonificacion():
             # se prueban ambos para no depender de cuál venga en el archivo nuevo.
             "superficie_ha": d.get("SUP(HA)") or d.get("HA") or p.get("superficie_ha"),
         }
-        parsed.append((props, geom))
-
-    # Completar links faltantes: si otra zona con exactamente la misma
-    # normativa ("reglamento") sí tiene un link http al Digesto cargado,
-    # se usa ese mismo link. Esto no inventa fuentes: solo replica un
-    # link que ya existe en el propio archivo para la misma ordenanza.
-    from collections import Counter
-    url_by_reglamento = {}
-    for props, _ in parsed:
-        reg = props.get("reglamento")
-        url = props.get("fuente_url") or ""
-        if reg and url.startswith("http"):
-            url_by_reglamento.setdefault(reg, Counter())[url] += 1
-    reglamento_best_url = {
-        reg: counter.most_common(1)[0][0] for reg, counter in url_by_reglamento.items()
-    }
-
-    for props, geom in parsed:
-        if not (props.get("fuente_url") or "").startswith("http"):
-            reg = props.get("reglamento")
-            if reg in reglamento_best_url:
-                props["fuente_url"] = reglamento_best_url[reg]
         out["features"].append({
             "type": "Feature",
             "properties": props,
