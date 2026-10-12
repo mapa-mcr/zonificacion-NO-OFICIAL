@@ -269,7 +269,7 @@ def build_nomenclatura(p):
     }
 
 
-def _procesar_features(features, transformer, dominio, shards):
+def _procesar_features(features, transformer, dominio, shards, catastro):
     n = 0
     for f in features:
         p = lower_keys(f["properties"])
@@ -299,12 +299,20 @@ def _procesar_features(features, transformer, dominio, shards):
         shards[shard_id]["features"].append({
             "type": "Feature", "properties": props, "geometry": new_geom
         })
+        # índice para la búsqueda por datos catastrales (una fila por partida
+        # y combinación circunscripción|sector|manzana|parcela)
+        catastro.add("|".join([
+            str(props["circunscripcion"] or ""), str(props["sector"] or ""),
+            str(props["manzana"] or ""), str(props["parcela_cat"] or ""),
+            str(int(partida)),
+        ]))
         n += 1
     return n
 
 
 def build_parcelas():
     shards = {i: {"type": "FeatureCollection", "features": []} for i in range(NSHARDS)}
+    catastro = set()
 
     combinado_path = os.path.join(SOURCE, "parcelario.geojson")
     fiscal_path = os.path.join(SOURCE, "inmuebles_fiscales.geojson")
@@ -315,7 +323,7 @@ def build_parcelas():
         # de dominio fiscal/privado (no viene en el archivo de origen).
         data = json.load(open(combinado_path, encoding="utf-8"))
         transformer = get_transformer(data)
-        n = _procesar_features(data["features"], transformer, dominio=None, shards=shards)
+        n = _procesar_features(data["features"], transformer, dominio=None, shards=shards, catastro=catastro)
         print(f"parcelario.geojson: {n} features (sin dato de dominio fiscal/privado)")
 
     elif os.path.exists(fiscal_path) and os.path.exists(privado_path):
@@ -327,7 +335,7 @@ def build_parcelas():
             path = os.path.join(SOURCE, fname)
             data = json.load(open(path, encoding="utf-8"))
             transformer = get_transformer(data)
-            n = _procesar_features(data["features"], transformer, dominio=dominio, shards=shards)
+            n = _procesar_features(data["features"], transformer, dominio=dominio, shards=shards, catastro=catastro)
             print(f"{fname}: {n} features")
 
     else:
@@ -343,6 +351,10 @@ def build_parcelas():
                    ensure_ascii=False, separators=(",", ":"))
     total = sum(len(s["features"]) for s in shards.values())
     print(f"parcelas: {total} features en {NSHARDS} archivos")
+
+    json.dump(sorted(catastro), open(os.path.join(OUT, "catastro_index.json"), "w", encoding="utf-8"),
+               ensure_ascii=False, separators=(",", ":"))
+    print(f"catastro_index.json: {len(catastro)} filas")
 
 
 if __name__ == "__main__":

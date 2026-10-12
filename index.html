@@ -236,6 +236,40 @@
     line-height:1.4;
   }
 
+  [hidden]{ display:none !important; }
+  .search-head{ display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+  .search-head label{ margin:0; white-space:nowrap; }
+  .search-head select{
+    flex:1; font:inherit; font-size:0.9rem; padding:7px 8px;
+    border:1.5px solid var(--navy-2); border-radius:2px; background:#fff; color:var(--ink);
+  }
+  .search-row input[type="text"]{ font-family:var(--sans); }
+  .cat-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-bottom:8px; }
+  .cat-grid label{ font-size:0.62rem; margin-bottom:3px; }
+  .cat-grid input{
+    width:100%; font-family:var(--mono); font-size:0.95rem; padding:8px 6px;
+    border:1.5px solid var(--navy-2); border-radius:2px; background:#fff;
+  }
+  .btn-full{
+    width:100%; background:var(--rust); color:#fff; border:none; padding:9px;
+    font-weight:600; font-size:0.95rem; border-radius:2px; cursor:pointer;
+  }
+  .btn-full:hover{ background:var(--rust-dark); }
+  .opcion{
+    display:block; width:100%; text-align:left; background:#fff; border:1px solid var(--line);
+    padding:9px 10px; margin-bottom:6px; cursor:pointer; font-size:0.82rem; color:var(--ink);
+  }
+  .opcion:hover{ border-color:var(--rust); }
+  .opcion small{ display:block; color:var(--ink-soft); font-size:0.72rem; margin-top:2px; }
+  .nota{ font-size:0.75rem; color:var(--ink-soft); margin:0 0 10px; line-height:1.4; }
+  .btn-sec{
+    background:none; border:1px solid var(--line); color:var(--navy-2); font-size:0.78rem;
+    padding:6px 10px; border-radius:2px; cursor:pointer; margin-top:10px;
+  }
+  .aviso-zoom{
+    background:rgba(255,255,255,0.92); padding:3px 8px; font-size:0.7rem;
+    border-radius:2px; color:var(--ink-soft); box-shadow:0 1px 3px rgba(0,0,0,0.2);
+  }
   .toast{
     position:fixed;
     bottom:18px;
@@ -289,15 +323,39 @@
 
   <div class="panel">
     <div class="search-box">
-      <label for="partida-input">Buscar por número de partida</label>
-      <div class="search-row">
+      <div class="search-head">
+        <label for="modo-busqueda">Buscar por</label>
+        <select id="modo-busqueda">
+          <option value="partida">Partida inmobiliaria</option>
+          <option value="domicilio">Domicilio</option>
+          <option value="catastro">Datos catastrales</option>
+        </select>
+      </div>
+
+      <div class="search-row" id="fila-partida">
         <input id="partida-input" type="number" inputmode="numeric" placeholder="Ej: 37679" />
         <button id="search-btn">Buscar</button>
       </div>
-      <div class="hint">También podés hacer clic en cualquier parcela o zona del mapa.</div>
+
+      <div class="search-row" id="fila-domicilio" hidden>
+        <input id="domicilio-input" type="text" placeholder="Ej: Rivadavia 450" autocomplete="off" />
+        <button id="btn-domicilio">Buscar</button>
+      </div>
+
+      <div id="fila-catastro" hidden>
+        <div class="cat-grid">
+          <div><label for="cat-circ">Circ.</label><input id="cat-circ" type="text" inputmode="text" autocomplete="off" /></div>
+          <div><label for="cat-sector">Sector</label><input id="cat-sector" type="text" inputmode="text" autocomplete="off" /></div>
+          <div><label for="cat-manz">Manzana</label><input id="cat-manz" type="text" inputmode="text" autocomplete="off" /></div>
+          <div><label for="cat-parc">Parcela</label><input id="cat-parc" type="text" inputmode="text" autocomplete="off" /></div>
+        </div>
+        <button id="btn-catastro" class="btn-full">Buscar</button>
+      </div>
+
+      <div class="hint" id="hint-busqueda">También podés hacer clic en cualquier parcela o zona del mapa.</div>
     </div>
     <div class="results" id="results">
-      <div class="empty">Ingresá un número de partida inmobiliaria para ver su zona urbana, indicadores urbanísticos y datos catastrales.</div>
+      <div class="empty">Buscá por partida, domicilio o datos catastrales para ver la zona urbana, los indicadores urbanísticos y los datos de la parcela.</div>
     </div>
     <details class="disclaimer-details" open>
       <summary>Sobre estos datos</summary>
@@ -355,11 +413,16 @@
   const shardCache = {};
   const zonasToggle = L.layerGroup();
 
-  // ---------- capa de límites de parcelas (a demanda, con corte por zoom) ----------
-  const ZOOM_MIN_PARCELAS = 15; // recién se dibuja al acercarse a escala manzana
-  const parcelasToggle = L.layerGroup(); // capa "vacía" usada solo como interruptor en el control
-  let parcelasEnabled = false;
-  let parcelasLoading = false;
+  // ---------- parcelas: aparecen y desaparecen solas según el zoom ----------
+  // Para cambiar a partir de qué zoom se ven, tocar solo estos dos números.
+  // (zoom 12 = toda la ciudad, 15 = un barrio, 17 = unas pocas manzanas, 19 = máximo)
+  const ZOOM_PARCELAS = 17; // desde acá se dibujan los límites de las parcelas
+  const ZOOM_NUMEROS  = 18; // desde acá, además, el número de partida en cada parcela
+  const parcelasRenderer = L.canvas({ padding: 0.5 }); // más liviano que SVG con miles de polígonos
+
+  // capa propia para lo resaltado (parcela buscada / domicilio), siempre por encima
+  map.createPane('resaltado');
+  map.getPane('resaltado').style.zIndex = 450;
 
   // ---------- load zonificación ----------
   const zonasReady = fetch('data/zonificacion_final.geojson').then(r=>r.json()).then(data=>{
@@ -403,8 +466,7 @@
       { 'Mapa de calles': capaCalles, 'Satelital': capaSatelital },
       {
         'Zonificación': zonasToggle,
-        'Límites de barrios': barrios,
-        'Límites y números de parcela (zoom cercano)': parcelasToggle
+        'Límites de barrios': barrios
       },
       {collapsed: window.matchMedia('(max-width: 760px)').matches}
     ).addTo(map);
@@ -422,37 +484,57 @@
     document.getElementById('toast').style.display = 'none';
   }
 
-  // Todas las parcelas se cargan una sola vez en memoria (con su bbox
-  // precalculado), pero SOLO se dibujan en el mapa las que caen dentro
-  // del recuadro visible en pantalla en cada momento. Esto es lo que
-  // permite sumar el número de partida sin generar 62.000 etiquetas de
-  // golpe: al hacer zoom o mover el mapa, se recalcula qué mostrar.
+  // Las parcelas se descargan una sola vez, la primera vez que el zoom llega a
+  // ZOOM_PARCELAS (o cuando una búsqueda las necesita). Después SOLO se dibujan las
+  // que caen dentro del recuadro visible, y se recalcula al mover o hacer zoom.
   let parcelasIndex = null; // [{f, bbox}]
+  let parcelasPromise = null;
   let parcelasVisibleLayer = null;
   let renderDebounce = null;
 
+  function bboxOf(coords){
+    let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+    (function walk(c){
+      if (typeof c[0] === 'number'){
+        if (c[0]<minX) minX=c[0]; if (c[0]>maxX) maxX=c[0];
+        if (c[1]<minY) minY=c[1]; if (c[1]>maxY) maxY=c[1];
+      } else { for (let i=0;i<c.length;i++) walk(c[i]); }
+    })(coords);
+    return [minX, minY, maxX, maxY];
+  }
+
   function ensureParcelasLoaded(){
-    if (parcelasIndex || parcelasLoading) return Promise.resolve();
-    parcelasLoading = true;
-    showToast('Cargando datos de parcelas (una sola vez)…');
+    if (parcelasPromise) return parcelasPromise;
+    showToast('Cargando parcelas (una sola vez)…');
     const keys = Array.from({length:100}, (_,i)=>String(i).padStart(2,'0'));
-    return Promise.all(keys.map(loadShard)).then(allShards => {
+    parcelasPromise = Promise.all(keys.map(loadShard)).then(allShards => {
       const feats = [].concat(...allShards.map(s => s.features));
-      parcelasIndex = feats.map(f => ({ f, bbox: turf.bbox(f) }));
-      parcelasLoading = false;
+      parcelasIndex = feats.map(f => ({ f, bbox: bboxOf(f.geometry.coordinates) }));
       hideToast();
       renderVisibleParcelas();
     }).catch(() => {
-      parcelasLoading = false;
-      showToast('No se pudieron cargar los datos de parcelas. Probá de nuevo.');
+      parcelasPromise = null;
+      showToast('No se pudieron cargar las parcelas. Probá de nuevo.');
       setTimeout(hideToast, 4000);
     });
+    return parcelasPromise;
   }
+
+  // cartelito discreto que explica por qué no se ven parcelas cuando el zoom es chico
+  const avisoZoom = L.control({position:'bottomright'});
+  avisoZoom.onAdd = function(){
+    const el = L.DomUtil.create('div','aviso-zoom');
+    el.textContent = 'Acercate para ver las parcelas';
+    return el;
+  };
+  avisoZoom.addTo(map);
 
   function renderVisibleParcelas(){
     if (parcelasVisibleLayer){ map.removeLayer(parcelasVisibleLayer); parcelasVisibleLayer = null; }
-    if (!parcelasEnabled || !parcelasIndex) return;
-    if (map.getZoom() < ZOOM_MIN_PARCELAS) return;
+    const z = map.getZoom();
+    avisoZoom.getContainer().style.display = (z < ZOOM_PARCELAS) ? 'block' : 'none';
+    if (z < ZOOM_PARCELAS) return;
+    if (!parcelasIndex){ ensureParcelasLoaded(); return; }
 
     const b = map.getBounds();
     const west = b.getWest(), east = b.getEast(), south = b.getSouth(), north = b.getNorth();
@@ -460,12 +542,14 @@
       .filter(({bbox}) => !(bbox[2] < west || bbox[0] > east || bbox[3] < south || bbox[1] > north))
       .map(({f}) => f);
 
+    const conNumeros = z >= ZOOM_NUMEROS;
     parcelasVisibleLayer = L.geoJSON({type:'FeatureCollection', features: visibles}, {
+      renderer: parcelasRenderer,
       style: { color:'#152B3C', weight:1, opacity:0.6, fillOpacity:0 },
       onEachFeature: (f, layer) => {
         layer.on('click', () => showParcelResult([f]));
         const partida = f.properties.partida;
-        if (partida !== undefined && partida !== null){
+        if (conNumeros && partida !== undefined && partida !== null){
           layer.bindTooltip(String(partida), { permanent:true, direction:'center', className:'partida-label' });
         }
       }
@@ -477,24 +561,9 @@
     renderDebounce = setTimeout(renderVisibleParcelas, 150);
   }
 
-  map.on('overlayadd', e => {
-    if (e.layer === parcelasToggle){
-      parcelasEnabled = true;
-      ensureParcelasLoaded().then(renderVisibleParcelas);
-      if (parcelasIndex && map.getZoom() < ZOOM_MIN_PARCELAS){
-        showToast('Acercate al mapa (zoom de manzana) para ver límites y números de partida.');
-        setTimeout(hideToast, 4000);
-      }
-    }
-  });
-  map.on('overlayremove', e => {
-    if (e.layer === parcelasToggle){
-      parcelasEnabled = false;
-      renderVisibleParcelas();
-    }
-  });
   map.on('zoomend', scheduleRenderVisibleParcelas);
   map.on('moveend', scheduleRenderVisibleParcelas);
+  renderVisibleParcelas(); // fija el estado inicial del cartelito
 
   function buildLegend(grupos){
     const div = L.control({position:'bottomleft'});
@@ -561,6 +630,26 @@
   // ---------- search ----------
   const resultsEl = document.getElementById('results');
   const input = document.getElementById('partida-input');
+  const modoSel = document.getElementById('modo-busqueda');
+  const hintEl = document.getElementById('hint-busqueda');
+  const filas = {
+    partida: document.getElementById('fila-partida'),
+    domicilio: document.getElementById('fila-domicilio'),
+    catastro: document.getElementById('fila-catastro')
+  };
+  const hints = {
+    partida: 'También podés hacer clic en cualquier parcela o zona del mapa.',
+    domicilio: 'Usa OpenStreetMap: la ubicación es aproximada y no siempre llega al lote exacto.',
+    catastro: 'Completá al menos dos datos. Los ceros a la izquierda no hacen falta (001 = 1).'
+  };
+
+  function cambiarModo(){
+    const modo = modoSel.value;
+    Object.keys(filas).forEach(k => { filas[k].hidden = (k !== modo); });
+    hintEl.textContent = hints[modo];
+  }
+  modoSel.addEventListener('change', cambiarModo);
+
   document.getElementById('search-btn').addEventListener('click', doSearch);
   input.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
 
@@ -572,6 +661,10 @@
       resultsEl.innerHTML = `<div class="error">"${escapeHtml(raw)}" no es un número de partida válido. Ingresá solo números.</div>`;
       return;
     }
+    buscarPartida(partida);
+  }
+
+  function buscarPartida(partida){
     resultsEl.innerHTML = `<div class="loading">Buscando partida ${partida}…</div>`;
 
     const shardId = ((partida % 100) + 100) % 100;
@@ -600,6 +693,163 @@
     });
   }
 
+  // ----- búsqueda por datos catastrales -----
+  let catastroIndex = null, catastroPromise = null;
+
+  function normCat(v){
+    v = String(v === undefined || v === null ? '' : v).trim().toUpperCase();
+    return /^\d+$/.test(v) ? String(parseInt(v, 10)) : v;
+  }
+
+  function cargarCatastro(){
+    if (catastroPromise) return catastroPromise;
+    catastroPromise = fetch('data/catastro_index.json').then(r => {
+      if (!r.ok) throw new Error('http ' + r.status);
+      return r.json();
+    }).then(arr => {
+      catastroIndex = arr.map(txt => {
+        const p = txt.split('|');
+        return { c:p[0], s:p[1], m:p[2], p:p[3], partida:Number(p[4]),
+                 nc:normCat(p[0]), ns:normCat(p[1]), nm:normCat(p[2]), np:normCat(p[3]) };
+      });
+      return catastroIndex;
+    }).catch(e => { catastroPromise = null; throw e; });
+    return catastroPromise;
+  }
+
+  function filtrarCatastro(index, q){
+    return index.filter(r =>
+      (!q.c || r.nc === q.c) && (!q.s || r.ns === q.s) &&
+      (!q.m || r.nm === q.m) && (!q.p || r.np === q.p));
+  }
+
+  function buscarCatastro(){
+    const q = {
+      c: normCat(document.getElementById('cat-circ').value),
+      s: normCat(document.getElementById('cat-sector').value),
+      m: normCat(document.getElementById('cat-manz').value),
+      p: normCat(document.getElementById('cat-parc').value)
+    };
+    const completos = [q.c, q.s, q.m, q.p].filter(Boolean).length;
+    if (completos < 2){
+      resultsEl.innerHTML = `<div class="error">Completá al menos dos datos (por ejemplo manzana y parcela) para buscar.</div>`;
+      return;
+    }
+    resultsEl.innerHTML = `<div class="loading">Buscando…</div>`;
+    cargarCatastro().then(index => {
+      const res = filtrarCatastro(index, q);
+      if (res.length === 0){
+        resultsEl.innerHTML = `<div class="error">No se encontró ninguna parcela con esos datos. Revisá los números o probá con menos campos.</div>`;
+      } else if (res.length === 1){
+        buscarPartida(res[0].partida);
+      } else {
+        mostrarOpcionesCatastro(res);
+      }
+    }).catch(() => {
+      resultsEl.innerHTML = `<div class="error">No se pudo cargar el índice catastral. Revisá tu conexión e intentá de nuevo.</div>`;
+    });
+  }
+
+  function mostrarOpcionesCatastro(res){
+    const MAX = 20;
+    const lista = res.slice(0, MAX);
+    let html = `<p class="nota">${res.length} parcelas coinciden. ${res.length > MAX ? `Se muestran las primeras ${MAX}; completá más datos para acotar.` : 'Elegí una:'}</p>`;
+    lista.forEach((r, i) => {
+      html += `<button class="opcion" data-i="${i}">Partida ${escapeHtml(String(r.partida))}
+        <small>Circ. ${escapeHtml(r.c || '—')} · Sector ${escapeHtml(r.s || '—')} · Manzana ${escapeHtml(r.m || '—')} · Parcela ${escapeHtml(r.p || '—')}</small></button>`;
+    });
+    resultsEl.innerHTML = html;
+    resultsEl.querySelectorAll('.opcion').forEach(btn => {
+      btn.addEventListener('click', () => buscarPartida(lista[Number(btn.dataset.i)].partida));
+    });
+  }
+
+  document.getElementById('btn-catastro').addEventListener('click', buscarCatastro);
+  ['cat-circ','cat-sector','cat-manz','cat-parc'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') buscarCatastro(); });
+  });
+
+  // ----- búsqueda por domicilio (geocodificación con OpenStreetMap / Nominatim) -----
+  const VIEWBOX_EJIDO = '-67.7471,-45.6932,-67.3385,-45.9439'; // izquierda,arriba,derecha,abajo: acota la búsqueda a Comodoro
+  const domInput = document.getElementById('domicilio-input');
+  let marcadorDomicilio = null;
+  let ultimosDomicilios = [];
+
+  function buscarDomicilio(){
+    const texto = domInput.value.trim();
+    if (texto.length < 3){
+      resultsEl.innerHTML = `<div class="error">Escribí la calle y, si la sabés, la altura (por ejemplo: Rivadavia 450).</div>`;
+      return;
+    }
+    resultsEl.innerHTML = `<div class="loading">Buscando domicilio…</div>`;
+    const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&countrycodes=ar&accept-language=es'
+      + '&viewbox=' + VIEWBOX_EJIDO + '&bounded=1&q=' + encodeURIComponent(texto + ', Comodoro Rivadavia, Chubut');
+    fetch(url).then(r => {
+      if (!r.ok) throw new Error('http ' + r.status);
+      return r.json();
+    }).then(lista => {
+      ultimosDomicilios = lista;
+      if (lista.length === 0){
+        resultsEl.innerHTML = `<div class="error">No encontré ese domicilio en el mapa de OpenStreetMap. Probá escribiendo solo la calle, o con otra forma del nombre. Si ya conocés la partida o los datos catastrales, podés buscar por esas opciones.</div>`;
+      } else if (lista.length === 1){
+        irADomicilio(lista[0]);
+      } else {
+        let html = `<p class="nota">Elegí la ubicación que corresponde:</p>`;
+        lista.forEach((it, i) => {
+          const partes = (it.display_name || '').split(',').map(x => x.trim());
+          html += `<button class="opcion" data-i="${i}">${escapeHtml(partes.slice(0,2).join(', '))}<small>${escapeHtml(partes.slice(2,4).join(', '))}</small></button>`;
+        });
+        resultsEl.innerHTML = html;
+        resultsEl.querySelectorAll('.opcion').forEach(btn => {
+          btn.addEventListener('click', () => irADomicilio(ultimosDomicilios[Number(btn.dataset.i)]));
+        });
+      }
+    }).catch(() => {
+      resultsEl.innerHTML = `<div class="error">No se pudo consultar el buscador de domicilios. Revisá tu conexión e intentá de nuevo en unos segundos.</div>`;
+    });
+  }
+
+  function irADomicilio(item){
+    const lat = parseFloat(item.lat), lon = parseFloat(item.lon);
+    if (marcadorDomicilio) map.removeLayer(marcadorDomicilio);
+    marcadorDomicilio = L.circleMarker([lat, lon], {
+      pane:'resaltado', radius:9, color:'#ffffff', weight:3, fillColor:'#B5583A', fillOpacity:1
+    }).addTo(map);
+    map.setView([lat, lon], 18);
+
+    const partes = (item.display_name || '').split(',').map(x => x.trim());
+    resultsEl.innerHTML = `<div class="card">
+      <h2>Ubicación encontrada</h2>
+      <p style="margin:0 0 6px;font-size:0.88rem;">${escapeHtml(partes.slice(0,3).join(', '))}</p>
+      <p class="nota">Es una ubicación aproximada de OpenStreetMap: puede caer sobre la calle o a unos metros del lote. Al acercarte ya se ven las parcelas con su número de partida.</p>
+      <button class="btn-sec" id="btn-parcela-punto" style="margin-top:0;">Ver la parcela en este punto</button>
+      <div id="msg-parcela-punto"></div>
+    </div>`;
+    document.getElementById('btn-parcela-punto').addEventListener('click', () => parcelaEnPunto(lat, lon));
+  }
+
+  function parcelaEnPunto(lat, lon){
+    const msg = document.getElementById('msg-parcela-punto');
+    if (msg) msg.innerHTML = `<p class="nota" style="margin-top:8px;">Buscando…</p>`;
+    ensureParcelasLoaded().then(() => {
+      if (!parcelasIndex) return;
+      const pt = turf.point([lon, lat]);
+      const hit = parcelasIndex.find(({f, bbox}) =>
+        lon >= bbox[0] && lon <= bbox[2] && lat >= bbox[1] && lat <= bbox[3] &&
+        turf.booleanPointInPolygon(pt, f));
+      if (!hit){
+        if (msg) msg.innerHTML = `<p class="nota" style="margin-top:8px;">El punto no cae dentro de ninguna parcela (suele quedar sobre la calle). Tocá la parcela que corresponda en el mapa.</p>`;
+        return;
+      }
+      const partida = hit.f.properties.partida;
+      const partes = parcelasIndex.filter(e => e.f.properties.partida === partida).map(e => e.f);
+      showParcelResult(partes, 'Parcela ubicada en el punto aproximado del domicilio. Verificá que sea la correcta.');
+    });
+  }
+
+  document.getElementById('btn-domicilio').addEventListener('click', buscarDomicilio);
+  domInput.addEventListener('keydown', e => { if (e.key === 'Enter') buscarDomicilio(); });
+
   // Si la página se abre con un link compartido (ej. ...?partida=37679),
   // precarga esa búsqueda sola.
   const partidaDeLaUrl = new URL(window.location).searchParams.get('partida');
@@ -608,10 +858,11 @@
     doSearch();
   }
 
-  function showParcelResult(features){
+  function showParcelResult(features, nota){
     // clear previous highlight
     if (highlightLayer) map.removeLayer(highlightLayer);
     highlightLayer = L.geoJSON({type:'FeatureCollection', features}, {
+      pane: 'resaltado',
       style: { color: '#B5583A', weight: 3, fillColor:'#B5583A', fillOpacity:0.45 }
     }).addTo(map);
     map.fitBounds(highlightLayer.getBounds(), { maxZoom: 18, padding:[30,30] });
@@ -668,7 +919,7 @@
       <button id="copy-link-btn" style="background:none;border:1px solid var(--line);color:var(--navy-2);font-size:0.76rem;padding:6px 10px;border-radius:2px;cursor:pointer;">Copiar link a esta partida</button>
     </div>`;
     html += `</div>`;
-    resultsEl.innerHTML = html;
+    resultsEl.innerHTML = (nota ? `<p class="nota">${escapeHtml(nota)}</p>` : '') + html;
 
     const copyBtn = document.getElementById('copy-link-btn');
     if (copyBtn){
