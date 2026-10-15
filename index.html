@@ -775,6 +775,39 @@
   let marcadorDomicilio = null;
   let ultimosDomicilios = [];
 
+  // Barrio del punto: se calcula con los límites de barrios de esta misma página
+  // (así los nombres coinciden con el resto del mapa); si no, se usa el de OpenStreetMap.
+  function barrioDePunto(lat, lon, dirOsm){
+    if (barriosData){
+      const pt = turf.point([lon, lat]);
+      for (const bf of barriosData.features){
+        try { if (turf.booleanPointInPolygon(pt, bf)) return bf.properties.barrio; } catch(e){}
+      }
+    }
+    return (dirOsm && (dirOsm.suburb || dirOsm.neighbourhood || dirOsm.quarter || dirOsm.city_district)) || '';
+  }
+
+  // Ordena y rotula los resultados: primero los que tienen el número exacto cargado,
+  // después los que son solo la calle; quita repetidos (misma calle, mismo barrio).
+  function normalizarDomicilios(lista){
+    const vistos = new Set();
+    const out = [];
+    lista.forEach(it => {
+      const a = it.address || {};
+      const lat = parseFloat(it.lat), lon = parseFloat(it.lon);
+      const calle = a.road || (it.display_name || '').split(',')[0].trim();
+      const exacto = !!a.house_number;
+      const barrio = barrioDePunto(lat, lon, a);
+      const titulo = exacto ? `${calle} ${a.house_number}` : calle;
+      const clave = `${titulo}|${barrio}|${exacto}`;
+      if (vistos.has(clave)) return;
+      vistos.add(clave);
+      out.push({ lat, lon, titulo, barrio, exacto });
+    });
+    out.sort((x, y) => (y.exacto ? 1 : 0) - (x.exacto ? 1 : 0));
+    return out;
+  }
+
   function buscarDomicilio(){
     const texto = domInput.value.trim();
     if (texto.length < 3){
@@ -782,22 +815,25 @@
       return;
     }
     resultsEl.innerHTML = `<div class="loading">Buscando domicilio…</div>`;
-    const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&countrycodes=ar&accept-language=es'
+    const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&addressdetails=1&countrycodes=ar&accept-language=es'
       + '&viewbox=' + VIEWBOX_EJIDO + '&bounded=1&q=' + encodeURIComponent(texto + ', Comodoro Rivadavia, Chubut');
     fetch(url).then(r => {
       if (!r.ok) throw new Error('http ' + r.status);
       return r.json();
     }).then(lista => {
-      ultimosDomicilios = lista;
-      if (lista.length === 0){
+      ultimosDomicilios = normalizarDomicilios(lista);
+      if (ultimosDomicilios.length === 0){
         resultsEl.innerHTML = `<div class="error">No encontré ese domicilio en el mapa de OpenStreetMap. Probá escribiendo solo la calle, o con otra forma del nombre. Si ya conocés la partida o los datos catastrales, podés buscar por esas opciones.</div>`;
-      } else if (lista.length === 1){
-        irADomicilio(lista[0]);
+      } else if (ultimosDomicilios.length === 1){
+        irADomicilio(ultimosDomicilios[0]);
       } else {
-        let html = `<p class="nota">Elegí la ubicación que corresponde:</p>`;
-        lista.forEach((it, i) => {
-          const partes = (it.display_name || '').split(',').map(x => x.trim());
-          html += `<button class="opcion" data-i="${i}">${escapeHtml(partes.slice(0,2).join(', '))}<small>${escapeHtml(partes.slice(2,4).join(', '))}</small></button>`;
+        const hayExactos = ultimosDomicilios.some(d => d.exacto);
+        let html = `<p class="nota">${hayExactos
+          ? 'Hay varias ubicaciones. Las marcadas como «número exacto» son las más confiables; las otras ubican solo la calle.'
+          : 'OpenStreetMap no tiene ese número cargado: estas opciones ubican solo la calle, en distintos barrios. Elegí el barrio que corresponda.'}</p>`;
+        ultimosDomicilios.forEach((d, i) => {
+          html += `<button class="opcion" data-i="${i}">${escapeHtml(d.titulo)}
+            <small>${d.barrio ? 'Barrio ' + escapeHtml(d.barrio) + ' · ' : ''}${d.exacto ? 'número exacto' : 'solo la calle (ubicación aproximada)'}</small></button>`;
         });
         resultsEl.innerHTML = html;
         resultsEl.querySelectorAll('.opcion').forEach(btn => {
@@ -809,23 +845,25 @@
     });
   }
 
-  function irADomicilio(item){
-    const lat = parseFloat(item.lat), lon = parseFloat(item.lon);
+  function irADomicilio(d){
     if (marcadorDomicilio) map.removeLayer(marcadorDomicilio);
-    marcadorDomicilio = L.circleMarker([lat, lon], {
+    marcadorDomicilio = L.circleMarker([d.lat, d.lon], {
       pane:'resaltado', radius:9, color:'#ffffff', weight:3, fillColor:'#B5583A', fillOpacity:1
     }).addTo(map);
-    map.setView([lat, lon], 18);
+    map.setView([d.lat, d.lon], 18);
 
-    const partes = (item.display_name || '').split(',').map(x => x.trim());
+    const detalle = d.exacto
+      ? 'Ubicación aproximada de OpenStreetMap: puede caer a unos metros del lote. Al acercarte ya se ven las parcelas con su número de partida.'
+      : 'OpenStreetMap no tiene cargado este número: el punto marca la calle, y puede estar lejos de la altura que buscás. Acercate y recorré la calle hasta encontrar el lote.';
     resultsEl.innerHTML = `<div class="card">
-      <h2>Ubicación encontrada</h2>
-      <p style="margin:0 0 6px;font-size:0.88rem;">${escapeHtml(partes.slice(0,3).join(', '))}</p>
-      <p class="nota">Es una ubicación aproximada de OpenStreetMap: puede caer sobre la calle o a unos metros del lote. Al acercarte ya se ven las parcelas con su número de partida.</p>
-      <button class="btn-sec" id="btn-parcela-punto" style="margin-top:0;">Ver la parcela en este punto</button>
-      <div id="msg-parcela-punto"></div>
+      <h2>${escapeHtml(d.titulo)}</h2>
+      <p style="margin:0 0 6px;font-size:0.85rem;color:var(--ink-soft);">${d.barrio ? 'Barrio ' + escapeHtml(d.barrio) : ''}</p>
+      <p class="nota">${detalle}</p>
+      ${d.exacto ? `<button class="btn-sec" id="btn-parcela-punto" style="margin-top:0;">Ver la parcela en este punto</button>
+      <div id="msg-parcela-punto"></div>` : ''}
     </div>`;
-    document.getElementById('btn-parcela-punto').addEventListener('click', () => parcelaEnPunto(lat, lon));
+    const btn = document.getElementById('btn-parcela-punto');
+    if (btn) btn.addEventListener('click', () => parcelaEnPunto(d.lat, d.lon));
   }
 
   function parcelaEnPunto(lat, lon){
