@@ -707,7 +707,7 @@
     loadShard(shardKey).then(shardData => {
       const matches = shardData.features.filter(f => Number(f.properties.partida) === partida);
       if (matches.length === 0){
-        resultsEl.innerHTML = `<div class="error">No se encontró la partida ${partida} en la base cargada. Puede tratarse de una partida nueva (generada después del último relevamiento) o de un error de tipeo. Revisá el número e intentá de nuevo.</div>`;
+        resultsEl.innerHTML = `<div class="error">No se encontró la partida ${partida} en la base cargada. Puede ser un error de tipeo, una partida nueva (posterior al último relevamiento) o una unidad funcional / PH, que no figura por separado. Si conocés los datos catastrales de la parcela, probá con «Buscar por: Datos catastrales».</div>`;
         return;
       }
       showParcelResult(matches);
