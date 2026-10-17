@@ -439,7 +439,6 @@
         const p = f.properties;
         const grupo = grupoDeZona(p);
         if (p.codigo) gruposVistos.set(grupo, p);
-        layer.on('click', () => renderZoneOnly(p));
         layer.bindTooltip(`${p.codigo || ''} — ${p.nombre || ''}`, {sticky:true});
       }
     });
@@ -545,9 +544,9 @@
     const conNumeros = z >= ZOOM_NUMEROS;
     parcelasVisibleLayer = L.geoJSON({type:'FeatureCollection', features: visibles}, {
       renderer: parcelasRenderer,
+      interactive: false,
       style: { color:'#152B3C', weight:1, opacity:0.6, fillOpacity:0 },
       onEachFeature: (f, layer) => {
-        layer.on('click', () => showParcelResult([f]));
         const partida = f.properties.partida;
         if (conNumeros && partida !== undefined && partida !== null){
           layer.bindTooltip(String(partida), { permanent:true, direction:'center', className:'partida-label' });
@@ -564,6 +563,41 @@
   map.on('zoomend', scheduleRenderVisibleParcelas);
   map.on('moveend', scheduleRenderVisibleParcelas);
   renderVisibleParcelas(); // fija el estado inicial del cartelito
+
+  // Devuelve todas las partes de la parcela que contiene el punto (o null).
+  function parcelaEnLatLng(lat, lon){
+    if (!parcelasIndex) return null;
+    const pt = turf.point([lon, lat]);
+    const hit = parcelasIndex.find(({f, bbox}) =>
+      lon >= bbox[0] && lon <= bbox[2] && lat >= bbox[1] && lat <= bbox[3] &&
+      turf.booleanPointInPolygon(pt, f));
+    if (!hit) return null;
+    const partida = hit.f.properties.partida;
+    return parcelasIndex.filter(e => e.f.properties.partida === partida).map(e => e.f);
+  }
+
+  function zonaEnLatLng(lat, lon){
+    if (!zonasData) return null;
+    const pt = turf.point([lon, lat]);
+    for (const zf of zonasData.features){
+      try { if (turf.booleanPointInPolygon(pt, zf)) return zf.properties; } catch(e){}
+    }
+    return null;
+  }
+
+  // Clic en el mapa: si las parcelas están visibles y hay una bajo el clic, muestra
+  // sus datos; si no, muestra la zona (siempre que la capa de zonificación esté prendida).
+  map.on('click', e => {
+    const lat = e.latlng.lat, lon = e.latlng.lng;
+    if (map.getZoom() >= ZOOM_PARCELAS){
+      const partes = parcelaEnLatLng(lat, lon);
+      if (partes){ showParcelResult(partes); return; }
+    }
+    if (zonasLayer && map.hasLayer(zonasLayer)){
+      const z = zonaEnLatLng(lat, lon);
+      if (z) renderZoneOnly(z);
+    }
+  });
 
   function buildLegend(grupos){
     const div = L.control({position:'bottomleft'});
@@ -677,9 +711,6 @@
         return;
       }
       showParcelResult(matches);
-      const url = new URL(window.location);
-      url.searchParams.set('partida', partida);
-      history.replaceState(null, '', url);
     }).catch(() => {
       resultsEl.innerHTML = `<div class="error">No se pudo cargar la información de esa partida. Revisá tu conexión e intentá de nuevo.</div>`;
     });
@@ -871,16 +902,11 @@
     if (msg) msg.innerHTML = `<p class="nota" style="margin-top:8px;">Buscando…</p>`;
     ensureParcelasLoaded().then(() => {
       if (!parcelasIndex) return;
-      const pt = turf.point([lon, lat]);
-      const hit = parcelasIndex.find(({f, bbox}) =>
-        lon >= bbox[0] && lon <= bbox[2] && lat >= bbox[1] && lat <= bbox[3] &&
-        turf.booleanPointInPolygon(pt, f));
-      if (!hit){
+      const partes = parcelaEnLatLng(lat, lon);
+      if (!partes){
         if (msg) msg.innerHTML = `<p class="nota" style="margin-top:8px;">El punto no cae dentro de ninguna parcela (suele quedar sobre la calle). Tocá la parcela que corresponda en el mapa.</p>`;
         return;
       }
-      const partida = hit.f.properties.partida;
-      const partes = parcelasIndex.filter(e => e.f.properties.partida === partida).map(e => e.f);
       showParcelResult(partes, 'Parcela ubicada en el punto aproximado del domicilio. Verificá que sea la correcta.');
     });
   }
@@ -958,6 +984,12 @@
     </div>`;
     html += `</div>`;
     resultsEl.innerHTML = (nota ? `<p class="nota">${escapeHtml(nota)}</p>` : '') + html;
+
+    // el link "copiar" siempre apunta a la parcela que se está mostrando, la haya
+    // encontrado una búsqueda o un clic en el mapa
+    const urlActual = new URL(window.location);
+    urlActual.searchParams.set('partida', p.partida);
+    history.replaceState(null, '', urlActual);
 
     const copyBtn = document.getElementById('copy-link-btn');
     if (copyBtn){
